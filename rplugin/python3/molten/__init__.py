@@ -287,6 +287,60 @@ class Molten:
     def _get_sorted_buf_cells(self, kernels: List[MoltenKernel], bufnr: int) -> List[CodeCell]:
         return sorted([x for x in chain(*[k.outputs.keys() for k in kernels]) if x.bufno == bufnr])
 
+    def _find_magic_cell_boundaries(self, bufnr: int) -> List[Tuple[int, int]]:
+        """查找缓冲区中所有由 #%% 分隔的cell边界
+        
+        Returns:
+            List[Tuple[int, int]]: 每个tuple包含(开始行号, 结束行号)的列表
+        """
+        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        cell_boundaries = []
+        cell_starts = []
+        
+        # 查找所有 #%% 标记的行
+        for i, line in enumerate(lines):
+            stripped_line = line.strip()
+            if stripped_line.startswith('#%%'):
+                cell_starts.append(i)
+        
+        # 如果没有找到任何cell标记，返回空列表
+        if not cell_starts:
+            return []
+        
+        # 生成cell边界对
+        for i in range(len(cell_starts)):
+            start_line = cell_starts[i]
+            # 下一个cell的开始就是当前cell的结束
+            if i + 1 < len(cell_starts):
+                end_line = cell_starts[i + 1] - 1
+            else:
+                # 最后一个cell延续到文件末尾
+                end_line = len(lines) - 1
+            
+            # 确保有有效的cell内容（至少包含魔法命令行）
+            if end_line >= start_line:
+                cell_boundaries.append((start_line, end_line))
+        
+        return cell_boundaries
+
+    def _find_current_magic_cell(self, bufnr: int, cursor_line: int) -> Optional[Tuple[int, int]]:
+        """查找cursor所在的魔法cell
+        
+        Args:
+            bufnr: 缓冲区编号
+            cursor_line: cursor所在的行号 (0-based)
+            
+        Returns:
+            Optional[Tuple[int, int]]: 如果找到，返回(开始行号, 结束行号)，否则返回None
+        """
+        cell_boundaries = self._find_magic_cell_boundaries(bufnr)
+        
+        for start_line, end_line in cell_boundaries:
+            if start_line <= cursor_line <= end_line:
+                return (start_line, end_line)
+        
+        return None
+
     @pynvim.command("MoltenDeinit", nargs=0, sync=True)  # type: ignore
     @nvimui  # type: ignore
     def command_deinit(self) -> None:
@@ -576,6 +630,423 @@ class Molten:
         else:
             self.kernel_check("MoltenEvaluateLine %k", self.nvim.current.buffer)
 
+    @pynvim.command("MoltenEvaluateMagicCell", nargs="*", sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_evaluate_magic_cell(self, args: List[str]) -> None:
+        """运行cursor所在的魔法cell（由#%%分隔的代码块）"""
+        _, lineno, _, _, _ = self.nvim.funcs.getcurpos()
+        cursor_line = lineno - 1  # 转换为0-based行号
+        bufnr = self.nvim.current.buffer.number
+        
+        # 查找当前cursor所在的魔法cell
+        cell_boundaries = self._find_current_magic_cell(bufnr, cursor_line)
+        if cell_boundaries is None:
+            notify_error(self.nvim, "Cursor不在任何魔法cell中。请确保代码被#%%标记包围。")
+            return
+        
+        start_line, end_line = cell_boundaries
+        
+        # 跳过魔法命令行本身，从下一行开始执行
+        # 如果魔法命令行后面还有内容，则从魔法命令行的下一行开始
+        code_start_line = start_line + 1
+        if code_start_line > end_line:
+            notify_warn(self.nvim, "魔法cell中没有可执行的代码。")
+            return
+        
+        # 创建span用于执行
+        span = (
+            (code_start_line, 0),
+            (end_line, -1)
+        )
+        
+        if len(args) > 0 and args[0]:
+            self._do_evaluate(args[0], span)
+        else:
+            self.kernel_check("MoltenEvaluateMagicCell %k", self.nvim.current.buffer)
+
+    @pynvim.command("MoltenNextMagicCell", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_next_magic_cell(self) -> None:
+        """跳转到下一个魔法cell"""
+        _, lineno, _, _, _ = self.nvim.funcs.getcurpos()
+        cursor_line = lineno - 1  # 转换为0-based行号
+        bufnr = self.nvim.current.buffer.number
+        
+        cell_boundaries = self._find_magic_cell_boundaries(bufnr)
+        if not cell_boundaries:
+            notify_warn(self.nvim, "当前缓冲区中没有找到魔法cell。")
+            return
+        
+        # 查找下一个cell
+        next_cell = None
+        for start_line, end_line in cell_boundaries:
+            if start_line > cursor_line:
+                next_cell = (start_line, end_line)
+                break
+        
+        if next_cell is None:
+            # 如果没有下一个cell，跳转到第一个cell（循环）
+            next_cell = cell_boundaries[0]
+        
+        # 跳转到cell的开始位置
+        self.nvim.api.win_set_cursor(0, (next_cell[0] + 1, 0))
+
+    @pynvim.command("MoltenPrevMagicCell", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_prev_magic_cell(self) -> None:
+        """跳转到上一个魔法cell"""
+        _, lineno, _, _, _ = self.nvim.funcs.getcurpos()
+        cursor_line = lineno - 1  # 转换为0-based行号
+        bufnr = self.nvim.current.buffer.number
+        
+        cell_boundaries = self._find_magic_cell_boundaries(bufnr)
+        if not cell_boundaries:
+            notify_warn(self.nvim, "当前缓冲区中没有找到魔法cell。")
+            return
+        
+        # 查找上一个cell
+        prev_cell = None
+        for start_line, end_line in reversed(cell_boundaries):
+            if start_line < cursor_line:
+                prev_cell = (start_line, end_line)
+                break
+        
+        if prev_cell is None:
+            # 如果没有上一个cell，跳转到最后一个cell（循环）
+            prev_cell = cell_boundaries[-1]
+        
+        # 跳转到cell的开始位置
+        self.nvim.api.win_set_cursor(0, (prev_cell[0] + 1, 0))
+
+    @pynvim.command("MoltenToggleGlobalVirtText", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_toggle_global_virt_text(self) -> None:
+        """全局开关虚拟文本输出功能"""
+        self._initialize_if_necessary()
+        
+        # 切换全局设置
+        current_value = self.options.virt_text_output
+        new_value = not current_value
+        
+        # 更新选项
+        self.options.update_option("virt_text_output", new_value)
+        
+        # 同时更新nvim全局变量，以便新的molten实例使用新设置
+        self.nvim.vars["molten_virt_text_output"] = new_value
+        
+        # 获取所有kernel并应用新设置
+        if new_value:
+            # 启用虚拟文本输出 - 显示所有cell的虚拟输出
+            for molten_kernels in self.buffers.values():
+                for kernel in molten_kernels:
+                    for cell, output in kernel.outputs.items():
+                        output.virt_hidden = False
+                        output.show_virtual_output(cell.end)
+            notify_info(self.nvim, "✅ 虚拟文本输出已启用")
+        else:
+            # 禁用虚拟文本输出 - 清除所有虚拟输出
+            for molten_kernels in self.buffers.values():
+                for kernel in molten_kernels:
+                    for cell, output in kernel.outputs.items():
+                        output.clear_virt_output(cell.bufno)
+            notify_info(self.nvim, "❌ 虚拟文本输出已禁用")
+
+    @pynvim.command("MoltenRefreshVirtText", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_refresh_virt_text(self) -> None:
+        """刷新所有虚拟文本输出的显示"""
+        self._initialize_if_necessary()
+        
+        kernels = self._get_current_buf_kernels(False)
+        if kernels is None:
+            notify_warn(self.nvim, "当前缓冲区没有活跃的molten kernel")
+            return
+        
+        if not self.options.virt_text_output:
+            notify_warn(self.nvim, "虚拟文本输出功能未启用。使用 :MoltenToggleGlobalVirtText 启用")
+            return
+        
+        refresh_count = 0
+        for kernel in kernels:
+            for cell, output in kernel.outputs.items():
+                # 先清除现有的虚拟输出
+                output.clear_virt_output(cell.bufno)
+                # 重新显示虚拟输出
+                output.virt_hidden = False
+                output.show_virtual_output(cell.end)
+                refresh_count += 1
+        
+        notify_info(self.nvim, f"🔄 已刷新 {refresh_count} 个cell的虚拟文本输出")
+
+    @pynvim.command("MoltenVirtTextStatus", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_virt_text_status(self) -> None:
+        """显示虚拟文本输出的当前状态"""
+        self._initialize_if_necessary()
+        
+        # 显示全局设置状态
+        global_status = "启用" if self.options.virt_text_output else "禁用"
+        
+        kernels = self._get_current_buf_kernels(False)
+        if kernels is None:
+            notify_info(self.nvim, f"📊 虚拟文本输出全局状态: {global_status} | 当前缓冲区: 无活跃kernel")
+            return
+        
+        # 统计当前缓冲区的虚拟输出状态
+        total_cells = 0
+        visible_cells = 0
+        hidden_cells = 0
+        
+        for kernel in kernels:
+            for cell, output in kernel.outputs.items():
+                total_cells += 1
+                if output.virt_text_id is not None and not output.virt_hidden:
+                    visible_cells += 1
+                else:
+                    hidden_cells += 1
+        
+        status_msg = f"📊 虚拟文本状态: {global_status} | 总计: {total_cells} | 可见: {visible_cells} | 隐藏: {hidden_cells}"
+        notify_info(self.nvim, status_msg)
+
+    @pynvim.command("MoltenToggleBufferVirtText", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_toggle_buffer_virt_text(self) -> None:
+        """切换当前缓冲区的虚拟文本输出显示"""
+        self._initialize_if_necessary()
+        
+        kernels = self._get_current_buf_kernels(True)
+        assert kernels is not None
+        
+        if not self.options.virt_text_output:
+            notify_warn(self.nvim, "虚拟文本输出功能未启用。使用 :MoltenToggleGlobalVirtText 启用")
+            return
+        
+        # 检查当前缓冲区是否有可见的虚拟输出
+        has_visible = False
+        total_cells = 0
+        
+        for kernel in kernels:
+            for cell, output in kernel.outputs.items():
+                total_cells += 1
+                if output.virt_text_id is not None and not output.virt_hidden:
+                    has_visible = True
+                    break
+            if has_visible:
+                break
+        
+        if total_cells == 0:
+            notify_warn(self.nvim, "当前缓冲区没有执行过的cell")
+            return
+        
+        # 根据当前状态切换
+        if has_visible:
+            # 隐藏所有虚拟输出
+            for kernel in kernels:
+                for cell, output in kernel.outputs.items():
+                    output.clear_virt_output(cell.bufno)
+            notify_info(self.nvim, f"❌ 已隐藏当前缓冲区的 {total_cells} 个cell的虚拟文本输出")
+        else:
+            # 显示所有虚拟输出
+            for kernel in kernels:
+                for cell, output in kernel.outputs.items():
+                    output.virt_hidden = False
+                    output.show_virtual_output(cell.end)
+            notify_info(self.nvim, f"✅ 已显示当前缓冲区的 {total_cells} 个cell的虚拟文本输出")
+
+    @pynvim.command("MoltenShowAllVirtText", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_show_all_virt_text(self) -> None:
+        """强制显示当前缓冲区所有cell的虚拟文本输出"""
+        self._initialize_if_necessary()
+        
+        kernels = self._get_current_buf_kernels(True)
+        assert kernels is not None
+        
+        if not self.options.virt_text_output:
+            notify_warn(self.nvim, "虚拟文本输出功能未启用。使用 :MoltenToggleGlobalVirtText 启用")
+            return
+        
+        show_count = 0
+        for kernel in kernels:
+            for cell, output in kernel.outputs.items():
+                output.virt_hidden = False
+                output.show_virtual_output(cell.end)
+                show_count += 1
+        
+        if show_count > 0:
+            notify_info(self.nvim, f"✅ 已强制显示 {show_count} 个cell的虚拟文本输出")
+        else:
+            notify_warn(self.nvim, "当前缓冲区没有可显示的cell输出")
+
+    @pynvim.command("MoltenHideAllVirtText", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_hide_all_virt_text(self) -> None:
+        """隐藏当前缓冲区所有cell的虚拟文本输出"""
+        self._initialize_if_necessary()
+        
+        kernels = self._get_current_buf_kernels(True)
+        assert kernels is not None
+        
+        hide_count = 0
+        for kernel in kernels:
+            for cell, output in kernel.outputs.items():
+                if output.virt_text_id is not None:
+                    output.clear_virt_output(cell.bufno)
+                    hide_count += 1
+        
+        if hide_count > 0:
+            notify_info(self.nvim, f"❌ 已隐藏 {hide_count} 个cell的虚拟文本输出")
+        else:
+            notify_info(self.nvim, "当前缓冲区没有可见的虚拟文本输出")
+
+    @pynvim.command("MoltenToggleMagicCellVirtText", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_toggle_magic_cell_virt_text(self) -> None:
+        """切换当前魔法cell的虚拟文本输出显示"""
+        self._initialize_if_necessary()
+        
+        kernels = self._get_current_buf_kernels(True)
+        assert kernels is not None
+        
+        if not self.options.virt_text_output:
+            notify_warn(self.nvim, "虚拟文本输出功能未启用。使用 :MoltenToggleGlobalVirtText 启用")
+            return
+        
+        # 获取当前cursor位置和魔法cell边界
+        _, lineno, _, _, _ = self.nvim.funcs.getcurpos()
+        cursor_line = lineno - 1  # 转换为0-based行号
+        bufnr = self.nvim.current.buffer.number
+        
+        cell_boundaries = self._find_current_magic_cell(bufnr, cursor_line)
+        if cell_boundaries is None:
+            notify_error(self.nvim, "Cursor不在任何魔法cell中。请确保代码被#%%标记包围。")
+            return
+        
+        start_line, end_line = cell_boundaries
+        
+        # 查找在这个魔法cell范围内的所有molten cell
+        magic_cell_outputs = []
+        for kernel in kernels:
+            for cell, output in kernel.outputs.items():
+                cell_start = cell.begin.lineno
+                cell_end = cell.end.lineno
+                # 检查molten cell是否在魔法cell范围内
+                if (start_line <= cell_start <= end_line) or (start_line <= cell_end <= end_line):
+                    magic_cell_outputs.append((cell, output))
+        
+        if not magic_cell_outputs:
+            notify_warn(self.nvim, "当前魔法cell中没有已执行的molten cell")
+            return
+        
+        # 检查是否有可见的虚拟输出
+        has_visible = any(
+            output.virt_text_id is not None and not output.virt_hidden 
+            for cell, output in magic_cell_outputs
+        )
+        
+        # 根据当前状态切换
+        if has_visible:
+            # 隐藏魔法cell中的所有虚拟输出
+            for cell, output in magic_cell_outputs:
+                output.clear_virt_output(cell.bufno)
+            notify_info(self.nvim, f"❌ 已隐藏当前魔法cell中 {len(magic_cell_outputs)} 个molten cell的虚拟文本输出")
+        else:
+            # 显示魔法cell中的所有虚拟输出
+            for cell, output in magic_cell_outputs:
+                output.virt_hidden = False
+                output.show_virtual_output(cell.end)
+            notify_info(self.nvim, f"✅ 已显示当前魔法cell中 {len(magic_cell_outputs)} 个molten cell的虚拟文本输出")
+
+    @pynvim.command("MoltenToggleMagicCellOutput", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_toggle_magic_cell_output(self) -> None:
+        """切换当前魔法cell的浮动窗口输出显示"""
+        self._initialize_if_necessary()
+        
+        kernels = self._get_current_buf_kernels(True)
+        assert kernels is not None
+        
+        # 获取当前cursor位置和魔法cell边界
+        _, lineno, _, _, _ = self.nvim.funcs.getcurpos()
+        cursor_line = lineno - 1  # 转换为0-based行号
+        bufnr = self.nvim.current.buffer.number
+        
+        cell_boundaries = self._find_current_magic_cell(bufnr, cursor_line)
+        if cell_boundaries is None:
+            notify_error(self.nvim, "Cursor不在任何魔法cell中。请确保代码被#%%标记包围。")
+            return
+        
+        start_line, end_line = cell_boundaries
+        
+        # 查找在这个魔法cell范围内的所有molten cell
+        magic_cell_outputs = []
+        for kernel in kernels:
+            for cell, output in kernel.outputs.items():
+                cell_start = cell.begin.lineno
+                cell_end = cell.end.lineno
+                # 检查molten cell是否在魔法cell范围内
+                if (start_line <= cell_start <= end_line) or (start_line <= cell_end <= end_line):
+                    magic_cell_outputs.append((cell, output))
+        
+        if not magic_cell_outputs:
+            notify_warn(self.nvim, "当前魔法cell中没有已执行的molten cell")
+            return
+        
+        # 检查是否有打开的浮动窗口
+        has_open_windows = any(
+            output.display_win is not None and output.display_win.valid
+            for cell, output in magic_cell_outputs
+        )
+        
+        # 根据当前状态切换
+        if has_open_windows:
+            # 关闭魔法cell中的所有浮动窗口
+            for cell, output in magic_cell_outputs:
+                output.clear_float_win()
+            notify_info(self.nvim, f"❌ 已关闭当前魔法cell中 {len(magic_cell_outputs)} 个molten cell的浮动窗口输出")
+        else:
+            # 显示魔法cell中的所有浮动窗口
+            for cell, output in magic_cell_outputs:
+                output.show_floating_win(cell.end)
+            notify_info(self.nvim, f"✅ 已显示当前魔法cell中 {len(magic_cell_outputs)} 个molten cell的浮动窗口输出")
+
+    @pynvim.command("MoltenToggleGlobalOutput", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_toggle_global_output(self) -> None:
+        """全局开关浮动窗口输出功能"""
+        self._initialize_if_necessary()
+        
+        # 获取所有kernel
+        if not self.molten_kernels:
+            notify_warn(self.nvim, "没有活跃的molten kernel")
+            return
+        
+        # 检查是否有打开的浮动窗口
+        has_open_windows = False
+        all_outputs = []
+        
+        for kernel in self.molten_kernels.values():
+            for cell, output in kernel.outputs.items():
+                all_outputs.append((cell, output))
+                if output.display_win is not None and output.display_win.valid:
+                    has_open_windows = True
+        
+        if not all_outputs:
+            notify_warn(self.nvim, "没有已执行的cell")
+            return
+        
+        # 根据当前状态切换
+        if has_open_windows:
+            # 关闭所有浮动窗口
+            for cell, output in all_outputs:
+                output.clear_float_win()
+            notify_info(self.nvim, f"❌ 已关闭所有 {len(all_outputs)} 个cell的浮动窗口输出")
+        else:
+            # 显示所有浮动窗口
+            for cell, output in all_outputs:
+                output.show_floating_win(cell.end)
+            notify_info(self.nvim, f"✅ 已显示所有 {len(all_outputs)} 个cell的浮动窗口输出")
+
     def kernel_check(self, command: str, buffer: Buffer) -> None:
         """Figure out if there is more than one kernel attached to the given buffer. If there is,
         prompt the user for the kernel name, and run the given command with the new kernel subbed in
@@ -688,10 +1159,11 @@ class Molten:
         assert molten_kernels is not None
 
         for molten in molten_kernels:
-            if molten.current_output is not None:
-                molten.should_show_floating_win = True
-                self._update_interface()
-                return
+            molten.should_show_floating_win = True
+            # Show output for selected cell if it exists
+            if molten.selected_cell is not None and molten.selected_cell in molten.outputs:
+                molten.outputs[molten.selected_cell].show_floating_win(molten.selected_cell.end)
+            self._update_interface()
 
     @pynvim.command("MoltenHideOutput", nargs=0, sync=True)  # type: ignore
     @nvimui  # type: ignore
@@ -714,6 +1186,9 @@ class Molten:
 
         for molten in molten_kernels:
             molten.should_show_floating_win = False
+            # Also clear all output windows explicitly
+            for output_buffer in molten.outputs.values():
+                output_buffer.clear_float_win()
 
         self._update_interface()
 

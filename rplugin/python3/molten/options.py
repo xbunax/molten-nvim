@@ -60,6 +60,7 @@ class MoltenOptions:
     show_mimetype_debug: bool
     tick_rate: int
     use_border_highlights: bool
+    verify_ssl: bool
     virt_lines_off_by_1: bool
     virt_text_max_lines: int
     virt_text_output: bool
@@ -100,6 +101,7 @@ class MoltenOptions:
             ("molten_show_mimetype_debug", False),
             ("molten_tick_rate", 500),
             ("molten_use_border_highlights", False),
+            ("molten_verify_ssl", False),
             ("molten_virt_lines_off_by_1", False),
             ("molten_virt_text_max_lines", 12),
             ("molten_virt_text_output", False),

@@ -382,11 +382,8 @@ class MoltenKernel:
 
         self.selected_cell = new_selected_cell
 
-        if (
-            self.selected_cell is not None
-            # Prevent from rendering when it's done
-            and self.output_statuses.get(self.selected_cell, None) != OutputStatus.DONE
-        ):
+        if self.selected_cell is not None:
+            # Always show selected cell, regardless of status
             self._show_selected(self.selected_cell)
 
         if self.options.virt_text_output:

@@ -45,7 +45,9 @@ class JupyterRuntime:
 
         if kernel_name.startswith("http://") or kernel_name.startswith("https://"):
             self.external_kernel = False
-            self.kernel_manager = JupyterAPIManager(kernel_name)
+            # 从options获取SSL验证设置，默认为False（允许自签名证书）
+            verify_ssl = getattr(options, 'verify_ssl', False)
+            self.kernel_manager = JupyterAPIManager(kernel_name, verify_ssl=verify_ssl)
             self.kernel_manager.start_kernel()
             self.kernel_client = self.kernel_manager.client()
             self.kernel_client.start_channels()
