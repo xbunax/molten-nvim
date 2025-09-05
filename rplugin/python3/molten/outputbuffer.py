@@ -33,7 +33,19 @@ class OutputBuffer:
 
         self.output = Output(None)
 
-        self.display_buf = self.nvim.buffers[self.nvim.api.create_buf(False, True)]
+        # 兼容性修复：在不同pynvim版本中create_buf的返回值处理方式不同
+        buf_result = self.nvim.api.create_buf(False, True)
+        if hasattr(buf_result, 'number'):
+            # 新版本pynvim：create_buf直接返回Buffer对象
+            self.display_buf = buf_result
+        else:
+            # 旧版本pynvim：create_buf返回buffer handle，需要通过nvim.buffers访问
+            try:
+                self.display_buf = self.nvim.buffers[buf_result]
+            except KeyError:
+                # 如果仍然失败，尝试刷新缓冲区列表
+                self.nvim.command('silent! checktime')
+                self.display_buf = self.nvim.buffers[buf_result]
         self.display_win = None
         self.display_virt_lines = None
         self.virt_hidden: bool = False
