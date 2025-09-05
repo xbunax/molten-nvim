@@ -301,7 +301,7 @@ class Molten:
         Returns:
             List[Tuple[int, int]]: 每个tuple包含(开始行号, 结束行号)的列表
         """
-        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        lines = self.nvim.api.buf_get_lines(bufnr, 0, -1, False)
         cell_boundaries = []
         cell_starts = []
         
@@ -1476,7 +1476,7 @@ class Molten:
         
         # 获取当前缓冲区的内容
         bufnr = self.nvim.current.buffer.number
-        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        lines = self.nvim.api.buf_get_lines(bufnr, 0, -1, False)
         
         # 解析outline
         outline_items = self.outline_parser.parse_buffer_outline(lines)
@@ -1486,7 +1486,7 @@ class Molten:
             return
         
         # 显示outline窗口
-        buffer_name = self.nvim.api.nvim_buf_get_name(bufnr)
+        buffer_name = self.nvim.api.buf_get_name(bufnr)
         title = f"Outline: {os.path.basename(buffer_name)}"
         self.outline_renderer.show_outline(outline_items, title)
         
@@ -1540,7 +1540,7 @@ class Molten:
         
         target = args[0]
         bufnr = self.nvim.current.buffer.number
-        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        lines = self.nvim.api.buf_get_lines(bufnr, 0, -1, False)
         
         outline_items = self.outline_parser.parse_buffer_outline(lines)
         
@@ -1575,7 +1575,7 @@ class Molten:
     def command_list_magic_cells(self) -> None:
         """列出当前缓冲区的所有magic cell"""
         bufnr = self.nvim.current.buffer.number
-        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        lines = self.nvim.api.buf_get_lines(bufnr, 0, -1, False)
         
         outline_items = self.outline_parser.parse_buffer_outline(lines)
         
