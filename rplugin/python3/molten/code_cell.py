@@ -57,7 +57,7 @@ class CodeCell:
     def get_text(self, nvim: Nvim) -> str:
         assert self.begin.bufno == self.end.bufno
 
-        lines: List[str] = nvim.funcs.nvim_buf_get_lines(
+        lines: List[str] = nvim.api.buf_get_lines(
             self.bufno, self.begin.lineno, self.end.lineno + 1, False
         )
 

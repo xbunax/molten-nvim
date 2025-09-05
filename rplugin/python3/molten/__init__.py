@@ -1504,7 +1504,7 @@ class Molten:
     def command_toggle_outline(self) -> None:
         """切换outline窗口显示"""
         if (self.outline_renderer.outline_win and 
-            self.nvim.api.nvim_win_is_valid(self.outline_renderer.outline_win)):
+            self.nvim.api.win_is_valid(self.outline_renderer.outline_win)):
             self.command_hide_outline()
         else:
             self.command_show_outline()
@@ -1514,11 +1514,11 @@ class Molten:
     def function_outline_goto(self, _) -> None:
         """从outline窗口跳转到对应位置"""
         if (not self.outline_renderer.outline_win or 
-            not self.nvim.api.nvim_win_is_valid(self.outline_renderer.outline_win)):
+            not self.nvim.api.win_is_valid(self.outline_renderer.outline_win)):
             return
         
         # 获取当前行号
-        cursor = self.nvim.api.nvim_win_get_cursor(self.outline_renderer.outline_win)
+        cursor = self.nvim.api.win_get_cursor(self.outline_renderer.outline_win)
         line_num = cursor[0] - 1  # 转换为0-based
         
         # 跳转到对应位置
@@ -1565,7 +1565,7 @@ class Molten:
         
         if target_item:
             # 跳转到目标cell
-            self.nvim.api.nvim_win_set_cursor(0, (target_item.line_start + 1, 0))
+            self.nvim.api.win_set_cursor(0, (target_item.line_start + 1, 0))
             notify_info(self.nvim, f"已跳转到: {target_item.name}")
         else:
             notify_error(self.nvim, f"未找到匹配的magic cell: {target}")

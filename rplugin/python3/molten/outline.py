@@ -216,11 +216,11 @@ class OutlineRenderer:
         content_lines = self._render_outline_content(outline_items)
         
         # 创建或更新outline窗口
-        if self.outline_win is None or not self.nvim.api.nvim_win_is_valid(self.outline_win):
+        if self.outline_win is None or not self.nvim.api.win_is_valid(self.outline_win):
             self._create_outline_window(title)
         
         # 设置缓冲区内容
-        self.nvim.api.nvim_buf_set_lines(self.outline_buf, 0, -1, False, content_lines)
+        self.nvim.api.buf_set_lines(self.outline_buf, 0, -1, False, content_lines)
         
         # 设置语法高亮
         self._setup_outline_syntax()
@@ -231,12 +231,12 @@ class OutlineRenderer:
     def _create_outline_window(self, title: str):
         """创建outline窗口"""
         # 创建缓冲区
-        self.outline_buf = self.nvim.api.nvim_create_buf(False, True)
-        self.nvim.api.nvim_buf_set_name(self.outline_buf, f"[{title}]")
+        self.outline_buf = self.nvim.api.create_buf(False, True)
+        self.nvim.api.buf_set_name(self.outline_buf, f"[{title}]")
         
         # 计算窗口尺寸和位置
-        ui_width = self.nvim.api.nvim_get_option("columns")
-        ui_height = self.nvim.api.nvim_get_option("lines")
+        ui_width = self.nvim.api.get_option("columns")
+        ui_height = self.nvim.api.get_option("lines")
         
         width = min(60, ui_width // 3)
         height = ui_height - 4
@@ -254,11 +254,11 @@ class OutlineRenderer:
             'title_pos': 'center'
         }
         
-        self.outline_win = self.nvim.api.nvim_open_win(self.outline_buf, False, win_config)
+        self.outline_win = self.nvim.api.open_win(self.outline_buf, False, win_config)
         
         # 设置窗口选项
-        self.nvim.api.nvim_win_set_option(self.outline_win, 'wrap', False)
-        self.nvim.api.nvim_win_set_option(self.outline_win, 'cursorline', True)
+        self.nvim.api.win_set_option(self.outline_win, 'wrap', False)
+        self.nvim.api.win_set_option(self.outline_win, 'cursorline', True)
     
     def _render_outline_content(self, outline_items: List[OutlineItem]) -> List[str]:
         """渲染outline内容"""
@@ -327,7 +327,7 @@ class OutlineRenderer:
     def _setup_outline_keymaps(self):
         """设置outline窗口的键盘映射"""
         # 设置缓冲区变量，存储outline数据
-        self.nvim.api.nvim_buf_set_var(self.outline_buf, 'molten_outline_renderer', id(self))
+        self.nvim.api.buf_set_var(self.outline_buf, 'molten_outline_renderer', id(self))
     
     def goto_outline_item(self, line_num: int):
         """跳转到outline项目对应的位置"""
@@ -337,8 +337,8 @@ class OutlineRenderer:
             # 跳转到原始缓冲区的对应位置
             original_win = self._get_original_window()
             if original_win:
-                self.nvim.api.nvim_set_current_win(original_win)
-                self.nvim.api.nvim_win_set_cursor(original_win, (item.line_start + 1, 0))
+                self.nvim.api.set_current_win(original_win)
+                self.nvim.api.win_set_cursor(original_win, (item.line_start + 1, 0))
     
     def _get_item_by_line(self, line_num: int) -> Optional[OutlineItem]:
         """根据outline窗口的行号获取对应的outline项目"""
@@ -364,20 +364,20 @@ class OutlineRenderer:
     def _get_original_window(self):
         """获取原始编辑窗口"""
         # 查找非outline窗口
-        for win in self.nvim.api.nvim_list_wins():
+        for win in self.nvim.api.list_wins():
             if win != self.outline_win:
-                buf = self.nvim.api.nvim_win_get_buf(win)
-                buf_name = self.nvim.api.nvim_buf_get_name(buf)
+                buf = self.nvim.api.win_get_buf(win)
+                buf_name = self.nvim.api.buf_get_name(buf)
                 if not buf_name.startswith('[') and not buf_name.endswith(']'):
                     return win
         return None
     
     def close_outline(self):
         """关闭outline窗口"""
-        if self.outline_win and self.nvim.api.nvim_win_is_valid(self.outline_win):
-            self.nvim.api.nvim_win_close(self.outline_win, True)
+        if self.outline_win and self.nvim.api.win_is_valid(self.outline_win):
+            self.nvim.api.win_close(self.outline_win, True)
             self.outline_win = None
         
-        if self.outline_buf and self.nvim.api.nvim_buf_is_valid(self.outline_buf):
-            self.nvim.api.nvim_buf_delete(self.outline_buf, {'force': True})
+        if self.outline_buf and self.nvim.api.buf_is_valid(self.outline_buf):
+            self.nvim.api.buf_delete(self.outline_buf, {'force': True})
             self.outline_buf = None

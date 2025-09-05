@@ -33,7 +33,7 @@ class OutputBuffer:
 
         self.output = Output(None)
 
-        self.display_buf = self.nvim.buffers[self.nvim.funcs.nvim_create_buf(False, True)]
+        self.display_buf = self.nvim.buffers[self.nvim.api.create_buf(False, True)]
         self.display_win = None
         self.display_virt_lines = None
         self.virt_hidden: bool = False
@@ -113,10 +113,10 @@ class OutputBuffer:
             elif self.options.enter_output_behavior == "open_and_enter":
                 self.show_floating_win(anchor)
                 entered = True
-                self.nvim.funcs.nvim_set_current_win(self.display_win)
+                self.nvim.api.set_current_win(self.display_win)
         elif self.options.enter_output_behavior != "no_open":
             entered = True
-            self.nvim.funcs.nvim_set_current_win(self.display_win)
+            self.nvim.api.set_current_win(self.display_win)
         if entered:
             if self.options.output_show_more:
                 self.remove_window_footer()
@@ -127,7 +127,7 @@ class OutputBuffer:
     def clear_float_win(self) -> None:
         if self.display_win is not None:
             if self.display_win.valid:
-                self.nvim.funcs.nvim_win_close(self.display_win, True)
+                self.nvim.api.win_close(self.display_win, True)
             self.display_win = None
             redraw = False
             for chunk in self.output.chunks:
@@ -281,7 +281,7 @@ class OutputBuffer:
         offset = 0
         lineno = anchor.lineno
         while lineno > 0:
-            current_line = self.nvim.funcs.nvim_buf_get_lines(
+            current_line = self.nvim.api.buf_get_lines(
                 anchor.bufno,
                 lineno,
                 lineno + 1,
