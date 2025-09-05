@@ -16,7 +16,7 @@ from molten.outputbuffer import OutputBuffer
 from molten.position import DynamicPosition, Position
 from molten.runtime import get_available_kernels
 from molten.utils import MoltenException, notify_error, notify_info, notify_warn, nvimui
-from molten.outline import MagicCellOutlineParser, OutlineRenderer
+from molten.outline import MagicCellOutlineParser, OutlineRenderer, VerticalOutlineRenderer
 from pynvim import Nvim
 
 
@@ -64,6 +64,7 @@ class Molten:
         # 初始化outline组件
         self.outline_parser = MagicCellOutlineParser()
         self.outline_renderer = OutlineRenderer(nvim)
+        self.vertical_outline_renderer = VerticalOutlineRenderer(nvim)
 
     def _initialize(self) -> None:
         assert not self.initialized
@@ -1508,6 +1509,72 @@ class Molten:
             self.command_hide_outline()
         else:
             self.command_show_outline()
+
+    @pynvim.command("MoltenShowVerticalOutline", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_show_vertical_outline(self) -> None:
+        """显示垂直层级outline"""
+        self._initialize_if_necessary()
+        
+        # 获取当前缓冲区的内容
+        bufnr = self.nvim.current.buffer.number
+        lines = self.nvim.api.buf_get_lines(bufnr, 0, -1, False)
+        
+        # 解析outline
+        outline_items = self.outline_parser.parse_buffer_outline(lines)
+        
+        if not outline_items:
+            notify_warn(self.nvim, "当前缓冲区中没有找到magic cell")
+            return
+        
+        # 显示垂直outline窗口
+        buffer_name = self.nvim.api.buf_get_name(bufnr)
+        title = f"Vertical Outline: {os.path.basename(buffer_name)}"
+        self.vertical_outline_renderer.show_vertical_outline(outline_items, title)
+        
+        notify_info(self.nvim, f"显示了垂直层级outline，包含 {len(outline_items)} 个magic cell")
+
+    @pynvim.command("MoltenHideVerticalOutline", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_hide_vertical_outline(self) -> None:
+        """隐藏垂直outline窗口"""
+        self.vertical_outline_renderer.close_vertical_outline()
+        notify_info(self.nvim, "已关闭垂直outline窗口")
+
+    @pynvim.command("MoltenToggleVerticalOutline", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_toggle_vertical_outline(self) -> None:
+        """切换垂直outline窗口显示"""
+        if self.vertical_outline_renderer.outline_windows:
+            self.command_hide_vertical_outline()
+        else:
+            self.command_show_vertical_outline()
+
+    @pynvim.function("MoltenVerticalOutlineSelect", sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def function_vertical_outline_select(self, args) -> None:
+        """垂直outline项目选择"""
+        if len(args) < 2:
+            return
+        level = args[0]
+        item_index = args[1]
+        self.vertical_outline_renderer.select_item(level, item_index)
+
+    @pynvim.function("MoltenVerticalOutlineUpdateLevels", sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def function_vertical_outline_update_levels(self, args) -> None:
+        """更新垂直outline依赖层级"""
+        if len(args) < 2:
+            return
+        changed_level = args[0]
+        selected_index = args[1]
+        self.vertical_outline_renderer.update_dependent_levels(changed_level, selected_index)
+
+    @pynvim.function("MoltenVerticalOutlineClose", sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def function_vertical_outline_close(self, _) -> None:
+        """关闭垂直outline窗口"""
+        self.vertical_outline_renderer.close_vertical_outline()
 
     @pynvim.function("MoltenOutlineGoto", sync=True)  # type: ignore
     @nvimui  # type: ignore

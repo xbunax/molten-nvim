@@ -210,6 +210,419 @@ class MagicCellOutlineParser:
         return items
 
 
+class VerticalOutlineRenderer:
+    """垂直层级outline渲染器，实现从左到右的层级显示"""
+    
+    def __init__(self, nvim):
+        self.nvim = nvim
+        self.outline_windows = []  # 存储多个窗口的信息
+        self.outline_buffers = []  # 存储多个缓冲区
+        self.current_level = 0     # 当前激活的层级
+        self.outline_items = []    # 存储outline数据
+        self.lsp_client = None     # LSP客户端
+        
+    def show_vertical_outline(self, outline_items: List[OutlineItem], title: str = "Vertical Outline"):
+        """显示垂直层级outline"""
+        self.outline_items = outline_items
+        
+        # 清理现有窗口
+        self._cleanup_windows()
+        
+        # 获取LSP符号信息（如果可用）
+        self._get_lsp_symbols()
+        
+        # 创建层级结构
+        levels = self._build_level_structure(outline_items)
+        
+        # 创建多个垂直窗口
+        self._create_vertical_windows(levels, title)
+        
+        # 设置导航键位
+        self._setup_vertical_navigation()
+        
+        # 聚焦到第一个窗口
+        if self.outline_windows:
+            self.nvim.api.set_current_win(self.outline_windows[0]['win'])
+            
+    def _get_lsp_symbols(self):
+        """获取LSP符号信息"""
+        try:
+            # 尝试获取当前缓冲区的LSP符号
+            current_buf = self.nvim.current.buffer
+            buf_name = self.nvim.api.buf_get_name(current_buf.number)
+            
+            # 调用LSP获取符号
+            lsp_symbols = self.nvim.call('luaeval', '''
+                local params = {
+                    textDocument = vim.lsp.util.make_text_document_params()
+                }
+                local results = {}
+                local clients = vim.lsp.get_active_clients()
+                
+                for _, client in ipairs(clients) do
+                    if client.supports_method("textDocument/documentSymbol") then
+                        local result = client.request_sync("textDocument/documentSymbol", params, 5000)
+                        if result and result.result then
+                            table.insert(results, result.result)
+                        end
+                    end
+                end
+                
+                return results
+            ''')
+            
+            # 处理LSP符号结果
+            if lsp_symbols:
+                self._process_lsp_symbols(lsp_symbols)
+                
+        except Exception as e:
+            # LSP不可用时使用基础解析
+            pass
+            
+    def _process_lsp_symbols(self, lsp_symbols):
+        """处理LSP符号信息"""
+        # 将LSP符号转换为我们的outline项目格式
+        # 这里可以获取更准确的函数、类、变量信息
+        pass
+        
+    def _build_level_structure(self, outline_items: List[OutlineItem]) -> List[List[OutlineItem]]:
+        """构建层级结构"""
+        levels = []
+        
+        # 第一层：Magic Cells
+        level_0 = [item for item in outline_items if item.type == OutlineItemType.MAGIC_CELL]
+        if level_0:
+            levels.append(level_0)
+        
+        # 第二层：当前选中cell的函数和类
+        if level_0:
+            current_cell = level_0[0]  # 默认选择第一个cell
+            level_1 = []
+            
+            # 添加函数
+            for item in outline_items:
+                if (item.type in [OutlineItemType.FUNCTION, OutlineItemType.CLASS, OutlineItemType.VARIABLE] and
+                    item.line_start >= current_cell.line_start and 
+                    item.line_end <= current_cell.line_end):
+                    level_1.append(item)
+            
+            if level_1:
+                levels.append(level_1)
+                
+                # 第三层：选中函数/类的方法
+                current_func = level_1[0]  # 默认选择第一个函数
+                if current_func.type == OutlineItemType.CLASS:
+                    level_2 = [child for child in current_func.children if child.type == OutlineItemType.METHOD]
+                    if level_2:
+                        levels.append(level_2)
+        
+        return levels
+        
+    def _create_vertical_windows(self, levels: List[List[OutlineItem]], title: str):
+        """创建垂直排列的窗口"""
+        if not levels:
+            return
+            
+        # 计算窗口布局
+        ui_width = self.nvim.api.get_option("columns")
+        ui_height = self.nvim.api.get_option("lines")
+        
+        # 每个窗口的宽度
+        window_width = min(25, ui_width // (len(levels) + 1))
+        window_height = ui_height - 6
+        
+        # 创建每个层级的窗口
+        for i, level_items in enumerate(levels):
+            # 计算窗口位置
+            col = i * (window_width + 2)  # 窗口间隔2列
+            row = 2
+            
+            # 创建缓冲区
+            buf_handle = self.nvim.api.create_buf(False, True)
+            
+            # 兼容性处理
+            if hasattr(buf_handle, 'number'):
+                buf = buf_handle
+            else:
+                buf = self.nvim.buffers[buf_handle]
+            
+            # 设置缓冲区名称
+            level_name = self._get_level_name(i)
+            self.nvim.api.buf_set_name(buf.number, f"[{title} - {level_name}]")
+            
+            # 渲染内容
+            lines = self._render_level_content(level_items, i)
+            self.nvim.api.buf_set_lines(buf.number, 0, -1, False, lines)
+            
+            # 设置缓冲区选项
+            self.nvim.api.buf_set_option(buf.number, 'modifiable', False)
+            self.nvim.api.buf_set_option(buf.number, 'buftype', 'nofile')
+            
+            # 创建浮动窗口
+            win_config = {
+                'relative': 'editor',
+                'width': window_width,
+                'height': window_height,
+                'col': col,
+                'row': row,
+                'style': 'minimal',
+                'border': 'rounded',
+                'title': f"{level_name} (Level {i+1})",
+                'title_pos': 'center'
+            }
+            
+            win = self.nvim.api.open_win(buf.number, False, win_config)
+            
+            # 设置窗口选项
+            self.nvim.api.win_set_option(win, 'wrap', False)
+            self.nvim.api.win_set_option(win, 'cursorline', True)
+            self.nvim.api.win_set_option(win, 'number', False)
+            self.nvim.api.win_set_option(win, 'relativenumber', False)
+            
+            # 存储窗口信息
+            window_info = {
+                'win': win,
+                'buf': buf.number,
+                'level': i,
+                'items': level_items
+            }
+            self.outline_windows.append(window_info)
+            self.outline_buffers.append(buf.number)
+            
+    def _get_level_name(self, level: int) -> str:
+        """获取层级名称"""
+        names = ["Cells", "Functions", "Methods", "Variables"]
+        return names[level] if level < len(names) else f"Level {level + 1}"
+        
+    def _render_level_content(self, items: List[OutlineItem], level: int) -> List[str]:
+        """渲染层级内容"""
+        lines = []
+        
+        for i, item in enumerate(items):
+            # 选择图标
+            icon = self._get_item_icon(item.type)
+            
+            # 格式化显示
+            if item.type == OutlineItemType.MAGIC_CELL:
+                # Cell显示：编号 + 名称
+                cell_num = i + 1
+                name = item.name.replace("# Magic Cell: ", "").strip() or f"Cell {cell_num}"
+                line = f"{icon} [{cell_num}] {name}"
+            else:
+                # 函数/类显示：名称 + 行号
+                line = f"{icon} {item.name} ({item.line_start + 1})"
+            
+            lines.append(line)
+            
+        return lines if lines else ["(Empty)"]
+        
+    def _get_item_icon(self, item_type: OutlineItemType) -> str:
+        """获取项目类型图标"""
+        icons = {
+            OutlineItemType.MAGIC_CELL: "📘",
+            OutlineItemType.FUNCTION: "🔧",
+            OutlineItemType.CLASS: "🏛️", 
+            OutlineItemType.METHOD: "⚙️",
+            OutlineItemType.VARIABLE: "📝"
+        }
+        return icons.get(item_type, "•")
+        
+    def _setup_vertical_navigation(self):
+        """设置垂直导航键位"""
+        # 为每个窗口设置键位映射
+        for window_info in self.outline_windows:
+            buf_num = window_info['buf']
+            level = window_info['level']
+            
+            # hjkl导航键位
+            mappings = [
+                # h: 向左移动到上一层级
+                ('n', 'h', f':lua molten_vertical_outline_move_left({level})<CR>', {'silent': True}),
+                # l: 向右移动到下一层级  
+                ('n', 'l', f':lua molten_vertical_outline_move_right({level})<CR>', {'silent': True}),
+                # j: 在当前层级向下
+                ('n', 'j', f':lua molten_vertical_outline_move_down({level})<CR>', {'silent': True}),
+                # k: 在当前层级向上
+                ('n', 'k', f':lua molten_vertical_outline_move_up({level})<CR>', {'silent': True}),
+                # 回车: 选择/跳转
+                ('n', '<CR>', f':lua molten_vertical_outline_select({level})<CR>', {'silent': True}),
+                # q/Esc: 关闭
+                ('n', 'q', ':lua molten_vertical_outline_close()<CR>', {'silent': True}),
+                ('n', '<Esc>', ':lua molten_vertical_outline_close()<CR>', {'silent': True}),
+            ]
+            
+            for mode, key, cmd, opts in mappings:
+                self.nvim.api.buf_set_keymap(buf_num, mode, key, cmd, opts)
+                
+        # 设置Lua导航函数
+        self._setup_lua_navigation_functions()
+        
+    def _setup_lua_navigation_functions(self):
+        """设置Lua导航函数"""
+        lua_code = f'''
+        -- 垂直outline导航函数
+        local vertical_outline_windows = {[win['win'] for win in self.outline_windows]}
+        local current_level = 0
+        
+        function molten_vertical_outline_move_left(level)
+            if level > 0 then
+                local target_win = vertical_outline_windows[level]  -- level-1 in 0-based
+                if target_win and vim.api.nvim_win_is_valid(target_win) then
+                    vim.api.nvim_set_current_win(target_win)
+                    current_level = level - 1
+                end
+            end
+        end
+        
+        function molten_vertical_outline_move_right(level)
+            if level < {len(self.outline_windows) - 1} then
+                local target_win = vertical_outline_windows[level + 2]  -- level+1 in 0-based  
+                if target_win and vim.api.nvim_win_is_valid(target_win) then
+                    vim.api.nvim_set_current_win(target_win)
+                    current_level = level + 1
+                end
+            end
+        end
+        
+        function molten_vertical_outline_move_down(level)
+            vim.cmd('normal! j')
+            -- 更新相关层级
+            molten_vertical_outline_update_dependent_levels(level)
+        end
+        
+        function molten_vertical_outline_move_up(level)
+            vim.cmd('normal! k')
+            -- 更新相关层级
+            molten_vertical_outline_update_dependent_levels(level)
+        end
+        
+        function molten_vertical_outline_select(level)
+            local cursor = vim.api.nvim_win_get_cursor(0)
+            local line_num = cursor[1] - 1  -- 转换为0-based
+            
+            -- 调用Python函数处理选择
+            vim.fn.MoltenVerticalOutlineSelect(level, line_num)
+        end
+        
+        function molten_vertical_outline_update_dependent_levels(level)
+            -- 当选择改变时，更新依赖的层级
+            local cursor = vim.api.nvim_win_get_cursor(0)
+            local line_num = cursor[1] - 1
+            
+            vim.fn.MoltenVerticalOutlineUpdateLevels(level, line_num)
+        end
+        
+        function molten_vertical_outline_close()
+            vim.fn.MoltenVerticalOutlineClose()
+        end
+        '''
+        
+        try:
+            self.nvim.exec_lua(lua_code)
+        except Exception as e:
+            # 如果Lua执行失败，至少设置基本的关闭功能
+            pass
+            
+    def update_dependent_levels(self, changed_level: int, selected_index: int):
+        """更新依赖层级"""
+        if changed_level >= len(self.outline_windows) - 1:
+            return
+            
+        # 获取当前选择的项目
+        current_window = self.outline_windows[changed_level]
+        if selected_index >= len(current_window['items']):
+            return
+            
+        selected_item = current_window['items'][selected_index]
+        
+        # 更新下一层级
+        next_level = changed_level + 1
+        if next_level < len(self.outline_windows):
+            self._update_level_content(next_level, selected_item)
+            
+    def _update_level_content(self, level: int, parent_item: OutlineItem):
+        """更新指定层级的内容"""
+        if level >= len(self.outline_windows):
+            return
+            
+        window_info = self.outline_windows[level]
+        
+        # 根据父项目获取子项目
+        new_items = []
+        
+        if level == 1:  # 函数层级
+            # 获取选中cell中的函数
+            for item in self.outline_items:
+                if (item.type in [OutlineItemType.FUNCTION, OutlineItemType.CLASS] and
+                    item.line_start >= parent_item.line_start and 
+                    item.line_end <= parent_item.line_end):
+                    new_items.append(item)
+        elif level == 2:  # 方法层级
+            # 获取选中类的方法
+            new_items = [child for child in parent_item.children if child.type == OutlineItemType.METHOD]
+            
+        # 更新窗口内容
+        window_info['items'] = new_items
+        lines = self._render_level_content(new_items, level)
+        self.nvim.api.buf_set_option(window_info['buf'], 'modifiable', True)
+        self.nvim.api.buf_set_lines(window_info['buf'], 0, -1, False, lines)
+        self.nvim.api.buf_set_option(window_info['buf'], 'modifiable', False)
+        
+    def select_item(self, level: int, item_index: int):
+        """选择项目并跳转"""
+        if level >= len(self.outline_windows) or item_index >= len(self.outline_windows[level]['items']):
+            return
+            
+        selected_item = self.outline_windows[level]['items'][item_index]
+        
+        # 关闭outline窗口
+        self.close_vertical_outline()
+        
+        # 跳转到目标位置
+        self._jump_to_item(selected_item)
+        
+    def _jump_to_item(self, item: OutlineItem):
+        """跳转到指定项目"""
+        # 找到原始文件窗口
+        for win in self.nvim.api.list_wins():
+            buf = self.nvim.api.win_get_buf(win)
+            buf_name = self.nvim.api.buf_get_name(buf)
+            
+            # 跳过outline窗口
+            if not any(f"[{self._get_level_name(i)}" in buf_name for i in range(4)):
+                self.nvim.api.set_current_win(win)
+                self.nvim.api.win_set_cursor(win, [item.line_start + 1, 0])
+                self.nvim.command('normal! zz')  # 居中显示
+                break
+                
+    def close_vertical_outline(self):
+        """关闭垂直outline"""
+        # 关闭所有窗口
+        for window_info in self.outline_windows:
+            try:
+                if self.nvim.api.win_is_valid(window_info['win']):
+                    self.nvim.api.win_close(window_info['win'], True)
+            except:
+                pass
+                
+        # 删除所有缓冲区
+        for buf_num in self.outline_buffers:
+            try:
+                if self.nvim.api.buf_is_valid(buf_num):
+                    self.nvim.api.buf_delete(buf_num, {'force': True})
+            except:
+                pass
+                
+        # 清理状态
+        self.outline_windows.clear()
+        self.outline_buffers.clear()
+        self.current_level = 0
+        
+    def _cleanup_windows(self):
+        """清理现有窗口"""
+        self.close_vertical_outline()
+
+
 class OutlineRenderer:
     """Outline渲染器，负责在Neovim中显示outline"""
     
