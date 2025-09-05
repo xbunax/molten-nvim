@@ -16,6 +16,7 @@ from molten.outputbuffer import OutputBuffer
 from molten.position import DynamicPosition, Position
 from molten.runtime import get_available_kernels
 from molten.utils import MoltenException, notify_error, notify_info, notify_warn, nvimui
+from molten.outline import MagicCellOutlineParser, OutlineRenderer
 from pynvim import Nvim
 
 
@@ -46,6 +47,9 @@ class Molten:
     # list of kernel names to the MoltenKernel object that handles that kernel
     # duplicate names are sufixed with (n)
     molten_kernels: Dict[str, MoltenKernel]
+    # outline related components
+    outline_parser: MagicCellOutlineParser
+    outline_renderer: OutlineRenderer
 
     def __init__(self, nvim: Nvim):
         self.nvim = nvim
@@ -56,6 +60,10 @@ class Molten:
         self.timer = None
         self.input_timer = None
         self.molten_kernels = {}
+        
+        # 初始化outline组件
+        self.outline_parser = MagicCellOutlineParser()
+        self.outline_renderer = OutlineRenderer(nvim)
 
     def _initialize(self) -> None:
         assert not self.initialized
@@ -1459,6 +1467,136 @@ class Molten:
                     self.nvim, self.canvas, molten.extmark_namespace, self.options
                 )
                 break
+
+    @pynvim.command("MoltenShowOutline", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_show_outline(self) -> None:
+        """显示当前缓冲区的magic cell outline"""
+        self._initialize_if_necessary()
+        
+        # 获取当前缓冲区的内容
+        bufnr = self.nvim.current.buffer.number
+        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        
+        # 解析outline
+        outline_items = self.outline_parser.parse_buffer_outline(lines)
+        
+        if not outline_items:
+            notify_warn(self.nvim, "当前缓冲区中没有找到magic cell")
+            return
+        
+        # 显示outline窗口
+        buffer_name = self.nvim.api.nvim_buf_get_name(bufnr)
+        title = f"Outline: {os.path.basename(buffer_name)}"
+        self.outline_renderer.show_outline(outline_items, title)
+        
+        notify_info(self.nvim, f"显示了 {len(outline_items)} 个magic cell的outline")
+
+    @pynvim.command("MoltenHideOutline", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_hide_outline(self) -> None:
+        """隐藏outline窗口"""
+        self.outline_renderer.close_outline()
+        notify_info(self.nvim, "已关闭outline窗口")
+
+    @pynvim.command("MoltenToggleOutline", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_toggle_outline(self) -> None:
+        """切换outline窗口显示"""
+        if (self.outline_renderer.outline_win and 
+            self.nvim.api.nvim_win_is_valid(self.outline_renderer.outline_win)):
+            self.command_hide_outline()
+        else:
+            self.command_show_outline()
+
+    @pynvim.function("MoltenOutlineGoto", sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def function_outline_goto(self, _) -> None:
+        """从outline窗口跳转到对应位置"""
+        if (not self.outline_renderer.outline_win or 
+            not self.nvim.api.nvim_win_is_valid(self.outline_renderer.outline_win)):
+            return
+        
+        # 获取当前行号
+        cursor = self.nvim.api.nvim_win_get_cursor(self.outline_renderer.outline_win)
+        line_num = cursor[0] - 1  # 转换为0-based
+        
+        # 跳转到对应位置
+        self.outline_renderer.goto_outline_item(line_num)
+
+    @pynvim.function("MoltenOutlineClose", sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def function_outline_close(self, _) -> None:
+        """关闭outline窗口"""
+        self.command_hide_outline()
+
+    @pynvim.command("MoltenGotoMagicCell", nargs="1", sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_goto_magic_cell(self, args: List[str]) -> None:
+        """跳转到指定的magic cell"""
+        if not args:
+            notify_error(self.nvim, "请指定要跳转的cell编号或名称")
+            return
+        
+        target = args[0]
+        bufnr = self.nvim.current.buffer.number
+        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        
+        outline_items = self.outline_parser.parse_buffer_outline(lines)
+        
+        if not outline_items:
+            notify_warn(self.nvim, "当前缓冲区中没有找到magic cell")
+            return
+        
+        # 查找目标cell
+        target_item = None
+        
+        # 尝试按编号查找
+        try:
+            cell_index = int(target) - 1  # 转换为0-based索引
+            if 0 <= cell_index < len(outline_items):
+                target_item = outline_items[cell_index]
+        except ValueError:
+            # 按名称查找
+            for item in outline_items:
+                if target.lower() in item.name.lower():
+                    target_item = item
+                    break
+        
+        if target_item:
+            # 跳转到目标cell
+            self.nvim.api.nvim_win_set_cursor(0, (target_item.line_start + 1, 0))
+            notify_info(self.nvim, f"已跳转到: {target_item.name}")
+        else:
+            notify_error(self.nvim, f"未找到匹配的magic cell: {target}")
+
+    @pynvim.command("MoltenListMagicCells", nargs=0, sync=True)  # type: ignore
+    @nvimui  # type: ignore
+    def command_list_magic_cells(self) -> None:
+        """列出当前缓冲区的所有magic cell"""
+        bufnr = self.nvim.current.buffer.number
+        lines = self.nvim.funcs.nvim_buf_get_lines(bufnr, 0, -1, False)
+        
+        outline_items = self.outline_parser.parse_buffer_outline(lines)
+        
+        if not outline_items:
+            notify_warn(self.nvim, "当前缓冲区中没有找到magic cell")
+            return
+        
+        # 构建显示信息
+        cell_info = []
+        for i, item in enumerate(outline_items):
+            func_count = len([child for child in item.children if child.type.value in ['function', 'method']])
+            class_count = len([child for child in item.children if child.type.value == 'class'])
+            
+            info = f"{i+1}. {item.name} (行 {item.line_start+1}-{item.line_end+1})"
+            if func_count > 0 or class_count > 0:
+                info += f" - {func_count}个函数, {class_count}个类"
+            cell_info.append(info)
+        
+        # 显示信息
+        message = f"发现 {len(outline_items)} 个magic cell:\n" + "\n".join(cell_info)
+        notify_info(self.nvim, message)
 
     @pynvim.command("MoltenToggleVirtual", nargs="0", sync=True, bang=True)  # type: ignore
     @nvimui  # type: ignore
